@@ -2,8 +2,9 @@ name: Cornice Kindle
 
 on:
   schedule:
-    # ogni giorno alle 04:30 UTC (05:30 o 06:30 in Italia): ben prima delle 8:00
-    - cron: "30 4 * * *"
+    # due volte al giorno (05:20 e 06:20 UTC): la seconda include le ultime partite NBA della costa ovest
+    - cron: "20 5 * * *"
+    - cron: "20 6 * * *"
   workflow_dispatch:
 
 permissions:
