@@ -155,13 +155,18 @@ def draw_icon(d, kind, cx, cy, s):
 
 
 # ---------------------------------------------------------------- notizie
+HDRS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+        "Accept-Language": "it-IT,it;q=0.9"}
+
+
 def fetch_news(url, retries=3):
     import requests
     import xml.etree.ElementTree as ET
     last = None
     for _ in range(retries):
         try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (cornice-kindle)"})
+            r = requests.get(url, timeout=30, headers=HDRS)
             r.raise_for_status()
             return parse_news(r.content)
         except Exception as e:  # noqa
@@ -357,18 +362,25 @@ def main():
                 print(f"[meteo {loc['name']}] errore: {e}", file=sys.stderr)
                 weather.append((loc, None))
                 wfail += 1
-        news, news_error = [], False
-        try:
-            if a.news_file:
-                news = parse_news(open(a.news_file, "rb").read())
-            else:
-                news = fetch_news(ncfg["url"])
-            news = news[:limit]
-            if not news:
-                raise ValueError("feed vuoto")
-        except Exception as e:  # noqa
-            print(f"[notizie] errore: {e}", file=sys.stderr)
-            news_error = True
+        news, news_error = [], True
+        sources = ncfg.get("sources") or [{"label": "", "url": ncfg.get("url", "")}]
+        for src in sources:
+            name = src.get("label") or src["url"]
+            try:
+                if a.news_file:
+                    got = parse_news(open(a.news_file, "rb").read())
+                else:
+                    got = fetch_news(src["url"], retries=2)
+                got = got[:limit]
+                if not got:
+                    raise ValueError("feed vuoto")
+                news, news_error = got, False
+                if src.get("label"):
+                    label = f"{label} · {src['label']}"
+                print(f"[notizie] fonte: {name}")
+                break
+            except Exception as e:  # noqa
+                print(f"[notizie] {name}: errore: {e}", file=sys.stderr)
         if wfail == len(cfg["locations"]) and news_error:
             print("Nessun dato disponibile: non genero l'immagine.", file=sys.stderr)
             sys.exit(1)
