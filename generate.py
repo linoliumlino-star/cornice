@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Genera dash.png (600x800, scala di grigi) per il Kindle:
-meteo di due localita' + impegni di oggi (e domani, se c'e' spazio).
+meteo di due localita' + titoli delle ultime notizie (feed RSS).
 
 Uso:
-  python generate.py --out dash.png            # dati veri (serve la rete + i segreti ICS_*)
+  python generate.py --out dash.png            # dati veri (serve la rete)
   python generate.py --demo --out demo.png     # dati d'esempio, senza rete
 """
 import argparse, json, os, re, sys, time
@@ -154,80 +154,88 @@ def draw_icon(d, kind, cx, cy, s):
         d.polygon([(cx + x * s, cy + y * s) for x, y in pts], fill=BLACK)
 
 
-# --------------------------------------------------------------- agenda
-def initials(title):
-    t = re.sub(r"\(.*?\)", "", title)
-    out = []
-    for tok in t.split()[:2]:
-        m = re.search(r"[^\W\d_]", tok)
-        if m:
-            out.append(m.group(0).upper() + ".")
-    return "".join(out) or title[:3]
-
-
-def normalize(cal_cfg, ev):
-    """Restituisce il testo da mostrare, oppure None se l'evento va scartato."""
-    mode = cal_cfg.get("mode", "full")
-    title = ev["title"]
-    if mode == "initials":
-        return initials(title)
-    if mode == "match":
-        if cal_cfg["match"].lower() in title.lower():
-            return cal_cfg.get("show_as", title)
-        return None
-    return title
-
-
-def load_events(cfg, start, end, tz):
+# ---------------------------------------------------------------- notizie
+def fetch_news(url, retries=3):
     import requests
-    import icalendar
-    import recurring_ical_events
-    out, errors = [], []
-    for cal_cfg in cfg["calendars"]:
-        url = os.environ.get(cal_cfg["env"], "").strip()
-        if not url:
-            errors.append(cal_cfg["label"])
-            continue
+    import xml.etree.ElementTree as ET
+    last = None
+    for _ in range(retries):
         try:
-            r = requests.get(url, timeout=40)
+            r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (cornice-kindle)"})
             r.raise_for_status()
-            cal = icalendar.Calendar.from_ical(r.content)
-            for comp in recurring_ical_events.of(cal).between(start, end):
-                if str(comp.get("STATUS", "")).upper() == "CANCELLED":
-                    continue
-                s = comp.decoded("DTSTART")
-                e = comp.decoded("DTEND") if comp.get("DTEND") else s
-                allday = not isinstance(s, dt.datetime)
-                if allday:
-                    s = dt.datetime.combine(s, dt.time(0), tzinfo=tz)
-                    e = dt.datetime.combine(e, dt.time(0), tzinfo=tz)
-                else:
-                    s = s.astimezone(tz) if s.tzinfo else s.replace(tzinfo=tz)
-                    e = e.astimezone(tz) if e.tzinfo else e.replace(tzinfo=tz)
-                out.append({"cal": cal_cfg, "title": str(comp.get("SUMMARY", "")).strip(),
-                            "start": s, "end": e, "allday": allday})
-        except Exception as ex:  # noqa
-            print(f"[{cal_cfg['label']}] errore: {ex}", file=sys.stderr)
-            errors.append(cal_cfg["label"])
-    return out, errors
+            return parse_news(r.content)
+        except Exception as e:  # noqa
+            last = e
+            time.sleep(4)
+    raise last
 
 
-def items_for_day(events, day, tz):
-    d0 = dt.datetime.combine(day, dt.time(0), tzinfo=tz)
-    d1 = d0 + dt.timedelta(days=1)
-    items = []
-    for ev in events:
-        if not (ev["start"] < d1 and ev["end"] > d0) and not (ev["start"] == ev["end"] and d0 <= ev["start"] < d1):
+def parse_news(xml_bytes):
+    """Legge un feed RSS 2.0 o Atom e restituisce [{'title', 'when'}] (piu' recenti per primi)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    root = ET.fromstring(xml_bytes)
+    out = []
+    for it in root.iter():
+        tag = it.tag.split("}")[-1]
+        if tag not in ("item", "entry"):
             continue
-        text = normalize(ev["cal"], ev)
-        if text is None:
-            continue
-        items.append({"allday": ev["allday"], "start": ev["start"], "end": ev["end"], "text": text})
-    items.sort(key=lambda i: (not i["allday"], i["start"]))
-    return items
+        title, when = "", None
+        for ch in it:
+            t = ch.tag.split("}")[-1]
+            if t == "title" and ch.text:
+                title = re.sub(r"\s+", " ", ch.text).strip()
+            elif t in ("pubDate", "published", "updated") and ch.text and when is None:
+                try:
+                    when = parsedate_to_datetime(ch.text)
+                except Exception:  # noqa
+                    try:
+                        when = dt.datetime.fromisoformat(ch.text.strip().replace("Z", "+00:00"))
+                    except Exception:  # noqa
+                        when = None
+        if title:
+            out.append({"title": title, "when": when})
+    return out
 
 
-# ------------------------------------------------------------ disegno
+def wrap_text(d, text, fnt, maxw, maxlines):
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if d.textlength(trial, font=fnt) <= maxw:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    if len(lines) > maxlines:
+        lines = lines[:maxlines]
+        lines[-1] = fit_text(d, lines[-1] + " …", fnt, maxw)
+    return lines
+
+
+def draw_news(d, items, x, y, bottom, width, label, tz):
+    d.text((x, y), label, font=font(20, True), fill=BLACK)
+    y += 36
+    if not items:
+        d.text((x, y), "notizie non disponibili", font=font(24), fill=MID)
+        return
+    fnt = font(23, True)
+    lh, gap, bullet = 28, 14, 26
+    for it in items:
+        lines = wrap_text(d, it["title"], fnt, width - bullet, 3)
+        need = len(lines) * lh
+        if y + need > bottom:
+            break
+        d.rectangle([x + 2, y + 9, x + 12, y + 19], fill=BLACK)
+        for ln in lines:
+            d.text((x + bullet, y), ln, font=fnt, fill=BLACK)
+            y += lh
+        y += gap
+
+
 def fit_text(d, text, fnt, maxw):
     if d.textlength(text, font=fnt) <= maxw:
         return text
@@ -271,34 +279,10 @@ def draw_panel(d, x0, y0, x1, loc, w):
         d.text((x + 46, y0 + 246), f"{tx}/{tn}", font=font(20, True), fill=BLACK)
 
 
-def draw_rows(d, items, x, y, maxrows, rowh, width):
-    """Disegna le righe dell'agenda; ritorna (y finale, righe usate)."""
-    shown = items
-    extra = 0
-    if len(items) > maxrows:
-        shown = items[:maxrows - 1]
-        extra = len(items) - len(shown)
-    for it in shown:
-        if it["allday"]:
-            d.text((x, y), "●", font=font(20), fill=BLACK)
-            d.text((x + 34, y), fit_text(d, it["text"], font(24, True), width - 34), font=font(24, True), fill=BLACK)
-        else:
-            t = f"{it['start']:%H:%M}–{it['end']:%H:%M}"
-            d.text((x, y), t, font=font(24, True), fill=BLACK)
-            d.text((x + 168, y), fit_text(d, it["text"], font(24), width - 168), font=font(24), fill=BLACK)
-        y += rowh
-    if extra:
-        d.text((x, y), f"+ altri {extra}…", font=font(22), fill=MID)
-        y += rowh
-    return y, len(shown) + (1 if extra else 0)
-
-
-def render(now, weather, events, cal_errors, demo=False):
-    tz = now.tzinfo
+def render(now, weather, news, news_error, label, demo=False):
     im = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(im)
     today = now.date()
-    tomorrow = today + dt.timedelta(days=1)
 
     # intestazione
     d.text((16, 12), f"{GIORNI[today.weekday()]} {today.day} {MESI[today.month - 1]}".upper(),
@@ -312,34 +296,8 @@ def render(now, weather, events, cal_errors, demo=False):
         draw_panel(d, x0, y0, x1, loc, w)
     d.rectangle([0, 358, W, 360], fill=BLACK)
 
-    # agenda
-    y = 368
-    d.text((16, y), "OGGI", font=font(20, True), fill=BLACK)
-    y += 34
-    rowh = 34
-    bottom = 764
-    today_items = items_for_day(events, today, tz)
-    tomorrow_items = items_for_day(events, tomorrow, tz)
-    maxrows = (bottom - y) // rowh
-    if cal_errors:
-        d.text((W - 16 - d.textlength("calendario non letto", font=font(16)), y - 30),
-               "calendario non letto", font=font(16), fill=MID)
-    if not today_items:
-        d.text((16, y), "Nessun impegno oggi", font=font(24), fill=MID)
-        y += rowh
-        rows_used = 1
-    else:
-        # lascio almeno 3 righe a "domani" se c'e' spazio
-        y, rows_used = draw_rows(d, today_items, 16, y, maxrows, rowh, W - 32)
-    left = maxrows - rows_used
-    if left >= 3 and tomorrow_items:
-        y += 6
-        d.rectangle([16, y, W - 16, y + 1], fill=LIGHT)
-        y += 10
-        d.text((16, y), f"DOMANI · {GIORNI3[tomorrow.weekday()]} {tomorrow.day}", font=font(18, True), fill=DARK)
-        y += 30
-        left = (bottom - y) // rowh
-        draw_rows(d, tomorrow_items, 16, y, max(left, 1), rowh, W - 32)
+    # notizie
+    draw_news(d, [] if news_error else news, 16, 370, 762, W - 32, label, now.tzinfo)
 
     # piede
     foot = f"aggiornato {now:%d/%m %H:%M}" + ("  ·  DEMO" if demo else "")
@@ -352,23 +310,14 @@ def render(now, weather, events, cal_errors, demo=False):
 # ----------------------------------------------------------------- demo
 def demo_data(tz):
     now = dt.datetime(2026, 11, 18, 6, 30, tzinfo=tz)
-
-    def L(d, h1, m1, h2, m2, title, cal=0):
-        return {"cal": CFG["calendars"][cal], "title": title, "allday": False,
-                "start": dt.datetime(2026, 11, d, h1, m1, tzinfo=tz),
-                "end": dt.datetime(2026, 11, d, h2, m2, tzinfo=tz)}
-
-    def A(d, title, cal=1):
-        return {"cal": CFG["calendars"][cal], "title": title, "allday": True,
-                "start": dt.datetime(2026, 11, d, 0, 0, tzinfo=tz),
-                "end": dt.datetime(2026, 11, d + 1, 0, 0, tzinfo=tz)}
-
-    ev = [L(18, 15, 15, 16, 0, "Andrea Lisi"), L(18, 16, 0, 16, 30, "Coco Dario"),
-          L(18, 16, 30, 17, 15, "Zuccheri Gabriele"), L(18, 17, 15, 18, 0, "Serra Davide"),
-          L(18, 18, 0, 18, 45, "Stanzani Arianna"), A(18, "Marco"), A(17, "Federica"),
-          L(19, 16, 30, 17, 15, "Tipaldi Irene"), L(19, 17, 15, 18, 0, "Cocchi Zoe"),
-          L(19, 18, 0, 18, 45, "Loccarini Anna"), L(19, 18, 45, 19, 30, "Ciocca Nicolò"),
-          A(19, "Marco")]
+    news = [{"title": t, "when": None} for t in (
+        "Il governo ha approvato la legge di bilancio, con alcune novità su pensioni e sanità",
+        "In Emilia-Romagna è prevista allerta meteo per le piogge intense di mercoledì",
+        "Cosa sappiamo del nuovo accordo commerciale tra Unione Europea e Mercosur",
+        "È morto a 86 anni un celebre regista teatrale: aveva diretto opere in tutto il mondo",
+        "Perché i biglietti dei concerti sono diventati così costosi",
+        "Il Portogallo ha annunciato un'allerta di cinque giorni per il rischio di incendi",
+        "Una nuova ricerca spiega perché dormiamo peggio d'inverno")]
     w1 = {"days": [
         {"date": "2026-11-18", "code": 61, "tmax": 11.4, "tmin": 6.2, "pop": 70, "rain": 4.0, "snow": 0, "wind": 14},
         {"date": "2026-11-19", "code": 3, "tmax": 10.1, "tmin": 5.0, "pop": 20, "rain": 0.2, "snow": 0, "wind": 10},
@@ -377,48 +326,59 @@ def demo_data(tz):
         {"date": "2026-11-18", "code": 73, "tmax": 1.2, "tmin": -4.0, "pop": 80, "rain": 3.0, "snow": 6, "wind": 12},
         {"date": "2026-11-19", "code": 71, "tmax": 0.0, "tmin": -5.5, "pop": 50, "rain": 1.0, "snow": 2, "wind": 9},
         {"date": "2026-11-20", "code": 0, "tmax": 3.1, "tmin": -6.0, "pop": 0, "rain": 0, "snow": 0, "wind": 6}]}
-    return now, [w1, w2], ev
+    return now, [w1, w2], news
 
 
 # ----------------------------------------------------------------- main
 def main():
-    global CFG
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="dash.png")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     ap.add_argument("--demo", action="store_true")
+    ap.add_argument("--news-file", help="(test) legge le notizie da un file XML locale")
     a = ap.parse_args()
-    CFG = json.load(open(a.config, encoding="utf-8"))
-    tz = ZoneInfo(CFG["timezone"])
+    cfg = json.load(open(a.config, encoding="utf-8"))
+    tz = ZoneInfo(cfg["timezone"])
+    ncfg = cfg.get("news", {})
+    label = ncfg.get("label", "NOTIZIE")
+    limit = int(ncfg.get("max", 8))
 
     if a.demo:
-        now, wlist, events = demo_data(tz)
-        weather = list(zip(CFG["locations"], wlist))
-        errors = []
+        now, wlist, news = demo_data(tz)
+        weather = list(zip(cfg["locations"], wlist))
+        news_error = False
     else:
         now = dt.datetime.now(tz)
         weather, wfail = [], 0
-        for loc in CFG["locations"]:
+        for loc in cfg["locations"]:
             try:
-                weather.append((loc, fetch_weather(loc, CFG["timezone"])))
+                weather.append((loc, fetch_weather(loc, cfg["timezone"])))
             except Exception as e:  # noqa
                 print(f"[meteo {loc['name']}] errore: {e}", file=sys.stderr)
                 weather.append((loc, None))
                 wfail += 1
-        d0 = dt.datetime.combine(now.date(), dt.time(0), tzinfo=tz)
-        events, errors = load_events(CFG, d0, d0 + dt.timedelta(days=2), tz)
-        if wfail == len(CFG["locations"]) and len(errors) == len(CFG["calendars"]):
+        news, news_error = [], False
+        try:
+            if a.news_file:
+                news = parse_news(open(a.news_file, "rb").read())
+            else:
+                news = fetch_news(ncfg["url"])
+            news = news[:limit]
+            if not news:
+                raise ValueError("feed vuoto")
+        except Exception as e:  # noqa
+            print(f"[notizie] errore: {e}", file=sys.stderr)
+            news_error = True
+        if wfail == len(cfg["locations"]) and news_error:
             print("Nessun dato disponibile: non genero l'immagine.", file=sys.stderr)
             sys.exit(1)
 
-    im = render(now, weather, events, errors, demo=a.demo)
+    im = render(now, weather, news, news_error, label, demo=a.demo)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     im.save(out, optimize=True)
     print(f"Scritto {out} ({im.size[0]}x{im.size[1]}, modo {im.mode})")
 
-
-CFG = {}
 
 if __name__ == "__main__":
     main()
