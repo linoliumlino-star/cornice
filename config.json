@@ -5,8 +5,14 @@
     {"name": "Pellizzano (TN)",    "lat": 46.32, "lon": 10.78, "elevation": 774}
   ],
   "news": {
-    "label": "NOTIZIE · IL POST",
-    "url": "https://www.ilpost.it/feed/",
-    "max": 8
+    "label": "NOTIZIE",
+    "max": 8,
+    "sources": [
+      {"label": "IL POST",   "url": "https://www.ilpost.it/feed/"},
+      {"label": "ANSA",      "url": "https://www.ansa.it/sito/ansait_rss.xml"},
+      {"label": "RAI NEWS",  "url": "https://www.rainews.it/rss/tutti"},
+      {"label": "CORRIERE",  "url": "https://xml2.corriereobjects.it/rss/homepage.xml"},
+      {"label": "REPUBBLICA","url": "https://www.repubblica.it/rss/homepage/rss2.0.xml"}
+    ]
   }
 }
