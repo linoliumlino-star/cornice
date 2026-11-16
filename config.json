@@ -5,8 +5,6 @@
     {"name": "Pellizzano (TN)",    "lat": 46.32, "lon": 10.78, "elevation": 774}
   ],
   "calendars": [
-    {"env": "ICS_CHITARRA",  "label": "Chitarra Capaldo", "mode": "initials"},
-    {"env": "ICS_TURNI",     "label": "Turni Sale",       "mode": "match", "match": "Marco", "show_as": "Turno sale"},
-    {"env": "ICS_DIRETTIVO", "label": "Direttivo",        "mode": "full"}
+    {"env": "ICS_CHITARRA",  "label": "Chitarra Capaldo", "mode": "initials"}
   ]
 }
