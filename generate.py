@@ -321,19 +321,21 @@ CARD = 238   # grigio chiarissimo dei riquadri
 
 
 def draw_hero(d, w, y0):
-    """Temperatura attuale in grande con icona; ritorna la y del fondo."""
+    """Icona del giorno con massima e minima in grande; ritorna la y del fondo."""
     today = w["days"][0]
-    code = w["now_code"] if w.get("now_code") is not None else today["code"]
-    k = kind_of(code)
-    temp = w["now"] if w.get("now") is not None else today["tmax"]
-    f_big = font(128, True)
-    txt = fmt_t(temp)
-    tw = d.textlength(txt, font=f_big)
-    icon_w = 190
-    sx = (W - (icon_w + 14 + tw)) / 2
-    draw_icon(d, k, sx + icon_w / 2, y0 + 100, 170)
-    d.text((sx + icon_w + 14, y0 + 8), txt, font=f_big, fill=BLACK)
-    y = y0 + 192
+    k = kind_of(today["code"])
+    f_big, f_lab = font(88, True), font(20, True)
+    tmax, tmin = fmt_t(today["tmax"]), fmt_t(today["tmin"])
+    nw = max(d.textlength(tmax, font=f_big), d.textlength(tmin, font=f_big))
+    icon_w, lab_w, gap = 190, 56, 24
+    sx = (W - (icon_w + gap + lab_w + nw)) / 2
+    draw_icon(d, k, sx + icon_w / 2, y0 + 96, 170)
+    x = sx + icon_w + gap
+    for i, (lab, txt) in enumerate((("MAX", tmax), ("MIN", tmin))):
+        yy = y0 + i * 96
+        d.text((x, yy + 63), lab, font=f_lab, fill=MID)
+        d.text((x + lab_w, yy), txt, font=f_big, fill=BLACK)
+    y = y0 + 200
     line1 = DESCR[k].capitalize()
     if today.get("pop") is not None and (wet(today) or today["pop"] >= 20):
         line1 += f"  ·  prec. {round(today['pop'])}%"
@@ -341,8 +343,6 @@ def draw_hero(d, w, y0):
         line1 += f"  ·  neve {today['snow']:.0f} cm"
     center_text(d, y, line1, font(26, True), BLACK)
     y += 38
-    center_text(d, y, f"max {fmt_t(today['tmax'])}      min {fmt_t(today['tmin'])}", font(24), DARK)
-    y += 34
     center_text(d, y, f"alba {hhmm(today.get('sunrise'))}    tramonto {hhmm(today.get('sunset'))}", font(18), MID)
     return y + 26
 
@@ -370,9 +370,14 @@ def draw_phrase(d, phrase, top, bottom):
     if not phrase:
         return
     if phrase.get("a") is not None:
-        fq, fa = font(21, True, italic=True), font(17)
-        lines = wrap_text(d, "«" + phrase["d"] + "»", fq, W - 56, 4)
-        blocks = [(ln, fq, BLACK, 27) for ln in lines]
+        fa = font(17)
+        txt = "«" + phrase["d"] + "»"
+        for size, nmax in ((21, 4), (19, 5), (17, 5)):
+            fq = font(size, True, italic=True)
+            if len(wrap_text(d, txt, fq, W - 56, 99)) <= nmax:
+                break
+        lines = wrap_text(d, txt, fq, W - 56, nmax)
+        blocks = [(ln, fq, BLACK, size + 6) for ln in lines]
         if phrase["a"]:
             blocks.append(("— " + phrase["a"], fa, DARK, 26))
     else:
