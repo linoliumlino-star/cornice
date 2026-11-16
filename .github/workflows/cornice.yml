@@ -1,0 +1,69 @@
+name: Cornice Kindle
+
+on:
+  schedule:
+    # ogni giorno alle 04:30 UTC (05:30 o 06:30 in Italia): ben prima delle 8:00
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa le dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Genera l'immagine
+        env:
+          ICS_CHITARRA: ${{ secrets.ICS_CHITARRA }}
+          ICS_TURNI: ${{ secrets.ICS_TURNI }}
+          ICS_DIRETTIVO: ${{ secrets.ICS_DIRETTIVO }}
+          PATH_TOKEN: ${{ vars.PATH_TOKEN }}
+        run: |
+          test -n "$PATH_TOKEN" || { echo "Manca la variabile PATH_TOKEN"; exit 1; }
+          mkdir -p "site/$PATH_TOKEN"
+          python generate.py --out "site/$PATH_TOKEN/dash.png"
+          echo "<!doctype html><title>.</title>" > site/index.html
+
+      - name: Keepalive mensile (GitHub disattiva i workflow di repo inattivi)
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date +%d)" = "01" ]; then
+            date -u > heartbeat.txt
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git add heartbeat.txt
+            git commit -m "keepalive" || true
+            git push || true
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
