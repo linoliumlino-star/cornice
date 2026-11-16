@@ -20,12 +20,12 @@
     "sources": [
       {
         "label": "IL POST",
-        "url": "https://www.ilpost.it/feed/"
+        "url": "https://news.google.com/rss/search?q=site:ilpost.it+when:1d&hl=it&gl=IT&ceid=IT:it",
+        "strip": "\\s+[-–|]\\s+Il Post\\s*$"
       },
       {
         "label": "IL POST",
-        "url": "https://news.google.com/rss/search?q=site:ilpost.it+when:1d&hl=it&gl=IT&ceid=IT:it",
-        "strip": "\\s+[-–|]\\s+Il Post\\s*$"
+        "url": "https://www.ilpost.it/feed/"
       }
     ]
   }
