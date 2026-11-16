@@ -1,5 +1,3 @@
 pillow
 requests
-icalendar
-recurring-ical-events
 tzdata
