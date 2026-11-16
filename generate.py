@@ -59,7 +59,7 @@ DESCR = {"sun": "sereno", "partly": "variabile", "cloud": "nuvoloso", "fog": "ne
          "rain": "pioggia", "snow": "neve", "storm": "temporale"}
 
 
-def fetch_weather(loc, tzname, retries=3):
+def fetch_weather(loc, tzname, retries=4):
     import requests
     params = {
         "latitude": loc["lat"], "longitude": loc["lon"], "elevation": loc.get("elevation"),
@@ -71,12 +71,12 @@ def fetch_weather(loc, tzname, retries=3):
     last = None
     for _ in range(retries):
         try:
-            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=30)
+            r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20)
             r.raise_for_status()
             return parse_weather(r.json())
         except Exception as e:  # noqa
             last = e
-            time.sleep(4)
+            time.sleep(6)
     raise last
 
 
