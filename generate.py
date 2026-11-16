@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Genera dash.png (600x800, scala di grigi) per il Kindle:
-meteo di due localita' + titoli delle ultime notizie (feed RSS).
+meteo compatto di due localita', frase del giorno in bolognese, risultati NBA della notte
+e titoli delle ultime notizie (Il Post).
 
 Uso:
   python generate.py --out dash.png            # dati veri (serve la rete)
@@ -24,14 +25,15 @@ MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
         "agosto", "settembre", "ottobre", "novembre", "dicembre"]
 
 
-def font(size, bold=False):
-    name = "DejaVuSansCondensed-Bold.ttf" if bold else "DejaVuSansCondensed.ttf"
-    p = ROOT / "fonts" / name
-    if not p.exists():
-        p = ROOT / name
-    if not p.exists():
-        p = Path("/usr/share/fonts/truetype/dejavu") / name
-    return ImageFont.truetype(str(p), size)
+def font(size, bold=False, italic=False):
+    base = "DejaVuSansCondensed"
+    suffix = ("-BoldOblique" if bold else "-Oblique") if italic else ("-Bold" if bold else "")
+    for nm in (base + suffix + ".ttf", base + ("-Bold" if bold else "") + ".ttf"):
+        for folder in (ROOT / "fonts", ROOT, Path("/usr/share/fonts/truetype/dejavu")):
+            p = folder / nm
+            if p.exists():
+                return ImageFont.truetype(str(p), size)
+    return ImageFont.load_default()
 
 
 # ----------------------------------------------------------------- meteo
@@ -160,18 +162,23 @@ HDRS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebK
         "Accept-Language": "it-IT,it;q=0.9"}
 
 
-def fetch_news(url, retries=3):
+UAS = [HDRS["User-Agent"],
+       "Feedly/1.0 (+http://www.feedly.com/fetcher.html; like FeedFetcher-Google)",
+       "Mozilla/5.0 (compatible; Feedbin; +https://feedbin.com)"]
+
+
+def fetch_news(url, retries=2):
     import requests
-    import xml.etree.ElementTree as ET
     last = None
-    for _ in range(retries):
-        try:
-            r = requests.get(url, timeout=30, headers=HDRS)
-            r.raise_for_status()
-            return parse_news(r.content)
-        except Exception as e:  # noqa
-            last = e
-            time.sleep(4)
+    for ua in UAS:
+        for _ in range(retries):
+            try:
+                r = requests.get(url, timeout=30, headers={**HDRS, "User-Agent": ua})
+                r.raise_for_status()
+                return parse_news(r.content)
+            except Exception as e:  # noqa
+                last = e
+                time.sleep(3)
     raise last
 
 
@@ -221,26 +228,112 @@ def wrap_text(d, text, fnt, maxw, maxlines):
     return lines
 
 
-def draw_news(d, items, x, y, bottom, width, label, tz):
-    d.text((x, y), label, font=font(20, True), fill=BLACK)
-    y += 36
-    if not items:
-        d.text((x, y), "notizie non disponibili", font=font(24), fill=MID)
-        return
-    fnt = font(23, True)
-    lh, gap, bullet = 28, 14, 26
-    for it in items:
-        lines = wrap_text(d, it["title"], fnt, width - bullet, 3)
-        need = len(lines) * lh
-        if y + need > bottom:
-            break
-        d.rectangle([x + 2, y + 9, x + 12, y + 19], fill=BLACK)
-        for ln in lines:
-            d.text((x + bullet, y), ln, font=fnt, fill=BLACK)
-            y += lh
-        y += gap
+
+# ------------------------------------------------------------------ NBA
+ABBR_FIX = {"GS": "GSW", "NY": "NYK", "SA": "SAS", "NO": "NOP", "UTAH": "UTA", "WSH": "WAS", "PHO": "PHX"}
 
 
+def fetch_nba(now, retries=3):
+    """Partite NBA concluse 'ieri' (data americana, fuso Est). -> [(away, sc_away, home, sc_home)]"""
+    import requests
+    et = ZoneInfo("America/New_York")
+    day = now.astimezone(et).date() - dt.timedelta(days=1)
+    url = ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+           f"?dates={day:%Y%m%d}&limit=50")
+    last = None
+    for _ in range(retries):
+        try:
+            r = requests.get(url, timeout=30, headers=HDRS)
+            r.raise_for_status()
+            return parse_nba(r.json())
+        except Exception as e:  # noqa
+            last = e
+            time.sleep(4)
+    raise last
+
+
+def parse_nba(j):
+    out = []
+    for ev in j.get("events", []):
+        try:
+            if not ev["status"]["type"].get("completed"):
+                continue
+            comp = ev["competitions"][0]["competitors"]
+            home = next(c for c in comp if c["homeAway"] == "home")
+            away = next(c for c in comp if c["homeAway"] == "away")
+            ab = lambda c: ABBR_FIX.get(c["team"]["abbreviation"], c["team"]["abbreviation"])
+            out.append((ab(away), int(away["score"]), ab(home), int(home["score"])))
+        except Exception:  # noqa
+            continue
+    return out
+
+
+def draw_nba(d, games, y, error=False):
+    """Riquadro risultati NBA a due colonne. Ritorna la y sotto il riquadro."""
+    x0, x1 = 12, W - 12
+    f_t, f_n, f_b = font(15, True), font(19), font(19, True)
+    if error or games is None:
+        rows, h = 0, 58
+    elif not games:
+        rows, h = 0, 58
+    else:
+        rows = (len(games) + 1) // 2
+        h = 34 + rows * 26 + 6
+    d.rectangle([x0, y, x1, y + h], outline=BLACK, width=2)
+    d.text((x0 + 12, y + 8), "NBA · STANOTTE", font=f_t, fill=BLACK)
+    if rows == 0:
+        msg = "risultati non disponibili" if (error or games is None) else "nessuna partita"
+        d.text((x0 + 12, y + 30), msg, font=font(17), fill=MID)
+        return y + h
+    colw = (x1 - x0 - 24) // 2
+    for i, (aw, sa, ho, sh) in enumerate(games):
+        cx = x0 + 14 + (i % 2) * (colw + 6)
+        cy = y + 34 + (i // 2) * 26
+        win_away = sa > sh
+        x = cx
+        d.text((x, cy), aw, font=f_b if win_away else f_n, fill=BLACK)
+        x += d.textlength(aw, font=f_b if win_away else f_n)
+        d.text((x, cy), " - ", font=f_n, fill=BLACK)
+        x += d.textlength(" - ", font=f_n)
+        d.text((x, cy), ho, font=f_n if win_away else f_b, fill=BLACK)
+        x += d.textlength(ho, font=f_n if win_away else f_b)
+        d.text((x, cy), f"  {sa}-{sh}", font=f_n, fill=DARK)
+    return y + h
+
+
+# ------------------------------------------------------- frase del giorno
+# Proverbi bolognesi tratti da fonti pubbliche (quotidiano.net, Wikiquote, raccolta di
+# detti dell'Unione Reno Galliera); grafia e traduzione come riportate dalle fonti.
+# 'm' = mesi in cui il detto "suona giusto" (None = tutto l'anno).
+PHRASES = [
+    {"d": "Utober bel ma porta teg' l'umbrell", "i": "Ottobre bello, ma porta con te l'ombrello", "m": [10]},
+    {"d": "Per San Lùca chi n'ha semne se splùca", "i": "Per San Luca, chi non ha seminato resta a mani vuote", "m": [10]},
+    {"d": "Quând ai é la fumèna, méttet la gabèna", "i": "Quando c'è la nebbia, mettiti la giacca", "m": [10, 11, 12, 1, 2]},
+    {"d": "Par San Zamiân, s'an piôv incȗ, a piôv admân", "i": "Per San Geminiano, se oggi non piove, piove domani", "m": [1, 2]},
+    {"d": "Febrarôl cȗrt cȗrt, l'é pîz d'un tȗrc", "i": "Febbraio, corto corto, è peggio di un turco", "m": [2]},
+    {"d": "Par la Candelòra, dell'inverno sêmo fòra, ma se al sòul al dà in dal zèd, d'l'invéren a sèn a mèz",
+     "i": "Per la Candelora siamo fuori dall'inverno, ma se il sole batte sulle siepi, ne siamo a metà", "m": [2]},
+    {"d": "Mèrz marzâz, ténzom al cȗl e brîsa al mustâz", "i": "Marzo marzaccio, tingimi il sedere e non il viso", "m": [3]},
+    {"d": "Quând al zîl al fà la lèna, al piôv dènter dala stmèna", "i": "Quando il cielo fa la lana, piove entro la settimana", "m": None},
+    {"d": "Quând la muntâgna l'é scȗra, la stasòn l'é insicȗra", "i": "Quando la montagna è scura, la stagione è incerta", "m": None},
+    {"d": "La fardȗra, trî dé dȗra", "i": "Il raffreddore dura tre giorni", "m": [10, 11, 12, 1, 2, 3]},
+    {"d": "Granè nôva, bèn spâza", "i": "Scopa nuova, spazza bene", "m": None},
+    {"d": "Mèl an fèr, pòra an avèir", "i": "Male non fare, paura non avere", "m": None},
+    {"d": "Chî lâsa la vî vècia par la nôva, pinté as trôva", "i": "Chi lascia la via vecchia per la nuova, pentito si trova", "m": None},
+    {"d": "La tèvla an lasèr mâi se la bòcca l'an sa da furmâi", "i": "Non lasciare la tavola finché la bocca non sa di formaggio", "m": None},
+    {"d": "Al mêdigh pietôus fa la piega verminôusa", "i": "Il medico pietoso fa la piaga verminosa", "m": None},
+    {"d": "L'aquila en ciapa mòsch", "i": "L'aquila non prende mosche", "m": None},
+    {"d": "Un poc d'zug è po bèll", "i": "Un po' di scherzo è bello, se dura poco", "m": None},
+    {"d": "Ch'in mâgna, à magnè", "i": "Chi non mangia, ha mangiato", "m": None},
+]
+
+
+def phrase_of_the_day(today):
+    pool = [p for p in PHRASES if p["m"] is None or today.month in p["m"]]
+    return pool[today.timetuple().tm_yday % len(pool)]
+
+
+# ----------------------------------------------------------------- notizie
 def fit_text(d, text, fnt, maxw):
     if d.textlength(text, font=fnt) <= maxw:
         return text
@@ -249,64 +342,95 @@ def fit_text(d, text, fnt, maxw):
     return text + "…"
 
 
+def center_text(d, y, text, fnt, fill, x0=0, x1=W):
+    w = d.textlength(text, font=fnt)
+    d.text((x0 + (x1 - x0 - w) / 2, y), text, font=fnt, fill=fill)
+
+
+def draw_news(d, items, x, y, bottom, width, label):
+    d.text((x, y), label, font=font(15, True), fill=BLACK)
+    y += 26
+    if not items:
+        d.text((x, y), "notizie non disponibili", font=font(19), fill=MID)
+        return
+    fnt = font(19, True)
+    lh, gap, bullet = 23, 9, 20
+    for it in items:
+        lines = wrap_text(d, it["title"], fnt, width - bullet, 2)
+        need = len(lines) * lh
+        if y + need > bottom:
+            break
+        d.rectangle([x + 1, y + 8, x + 8, y + 15], fill=BLACK)
+        for ln in lines:
+            d.text((x + bullet, y), ln, font=fnt, fill=BLACK)
+            y += lh
+        y += gap
+
+
 def draw_panel(d, x0, y0, x1, loc, w):
-    """Pannello meteo di una localita' (x0..x1, a partire da y0)."""
-    d.text((x0 + 8, y0 + 4), fit_text(d, loc["name"].upper(), font(19, True), x1 - x0 - 16),
-           font=font(19, True), fill=BLACK)
+    """Pannello meteo compatto di una localita' (x0..x1, a partire da y0)."""
+    name = loc["name"].upper()
+    center_text(d, y0, fit_text(d, name, font(17, True), x1 - x0 - 12), font(17, True), BLACK, x0, x1)
     if w is None:
-        d.text((x0 + 8, y0 + 70), "meteo non", font=font(22), fill=MID)
-        d.text((x0 + 8, y0 + 96), "disponibile", font=font(22), fill=MID)
+        center_text(d, y0 + 40, "meteo non disponibile", font(17), MID, x0, x1)
         return
     today = w["days"][0]
     k = kind_of(today["code"])
-    draw_icon(d, k, x0 + 62, y0 + 78, 44)
     tmax = "–" if today["tmax"] is None else f"{round(today['tmax'])}°"
     tmin = "–" if today["tmin"] is None else f"{round(today['tmin'])}°"
-    d.text((x0 + 128, y0 + 36), tmax, font=font(56, True), fill=BLACK)
-    d.text((x0 + 130, y0 + 98), f"min {tmin}", font=font(22), fill=DARK)
-    d.text((x0 + 8, y0 + 138), DESCR[k], font=font(22, True), fill=BLACK)
-    parts = []
+    f_t = font(38, True)
+    txt = f"{tmax} / {tmin}"
+    tw = d.textlength(txt, font=f_t)
+    icon_w = 44
+    total = icon_w + 8 + tw
+    sx = x0 + (x1 - x0 - total) / 2
+    draw_icon(d, k, sx + icon_w / 2, y0 + 52, 28)
+    d.text((sx + icon_w + 8, y0 + 28), txt, font=f_t, fill=BLACK)
+    parts = [DESCR[k]]
     if today.get("pop") is not None:
         parts.append(f"prec. {round(today['pop'])}%")
     if today.get("snow"):
         parts.append(f"neve {today['snow']:.0f} cm")
-    d.text((x0 + 8, y0 + 168), " · ".join(parts), font=font(18), fill=DARK)
-    if today.get("wind") is not None:
-        d.text((x0 + 8, y0 + 192), f"vento {round(today['wind'])} km/h", font=font(18), fill=DARK)
-    # mini previsioni dei due giorni successivi
-    for n, day in enumerate(w["days"][1:3]):
-        x = x0 + 8 + n * 138
-        dd = dt.date.fromisoformat(day["date"])
-        d.text((x, y0 + 222), f"{GIORNI3[dd.weekday()]} {dd.day}", font=font(17, True), fill=BLACK)
-        draw_icon(d, kind_of(day["code"]), x + 20, y0 + 262, 16)
-        tx = "–" if day["tmax"] is None else f"{round(day['tmax'])}°"
-        tn = "–" if day["tmin"] is None else f"{round(day['tmin'])}°"
-        d.text((x + 46, y0 + 246), f"{tx}/{tn}", font=font(20, True), fill=BLACK)
+    center_text(d, y0 + 78, " · ".join(parts), font(16), DARK, x0, x1)
 
 
-def render(now, weather, news, news_error, label, demo=False):
+def render(now, weather, news, news_error, label, games, nba_error, phrase, demo=False):
     im = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(im)
     today = now.date()
 
-    # intestazione
-    d.text((16, 12), f"{GIORNI[today.weekday()]} {today.day} {MESI[today.month - 1]}".upper(),
-           font=font(32, True), fill=BLACK)
-    d.rectangle([0, 60, W, 63], fill=BLACK)
+    # data + frase del giorno
+    center_text(d, 8, f"{GIORNI[today.weekday()]} {today.day} {MESI[today.month - 1]}".upper(),
+                font(30, True), BLACK)
+    y = 48
+    if phrase:
+        fd, fi = font(19, True, italic=True), font(15)
+        for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 2):
+            center_text(d, y, ln, fd, BLACK)
+            y += 24
+        for ln in wrap_text(d, phrase["i"], fi, W - 40, 2):
+            center_text(d, y, ln, fi, DARK)
+            y += 19
+    y += 6
+    d.rectangle([0, y, W, y + 2], fill=BLACK)
 
     # meteo
-    y0 = 70
-    d.line([300, y0 + 4, 300, y0 + 282], fill=LIGHT, width=2)
-    for (x0, x1), (loc, w) in zip(((8, 296), (306, 594)), weather):
+    y0 = y + 10
+    d.line([300, y0 + 2, 300, y0 + 98], fill=LIGHT, width=2)
+    for (x0, x1), (loc, w) in zip(((6, 296), (304, 594)), weather):
         draw_panel(d, x0, y0, x1, loc, w)
-    d.rectangle([0, 358, W, 360], fill=BLACK)
+    y = y0 + 106
+    d.rectangle([0, y, W, y + 2], fill=BLACK)
+
+    # NBA
+    y = draw_nba(d, games, y + 10, error=nba_error) + 10
 
     # notizie
-    draw_news(d, [] if news_error else news, 16, 370, 762, W - 32, label, now.tzinfo)
+    draw_news(d, [] if news_error else news, 16, y, 764, W - 32, label)
 
     # piede
     foot = f"aggiornato {now:%d/%m %H:%M}" + ("  ·  DEMO" if demo else "")
-    d.text((16, 774), foot, font=font(15), fill=MID)
+    d.text((16, 779), foot, font=font(13), fill=MID)
 
     # 16 livelli di grigio, senza dithering (il testo resta nitido)
     return im.point(lambda v: min(255, round(v / 17) * 17))
@@ -331,7 +455,10 @@ def demo_data(tz):
         {"date": "2026-11-18", "code": 73, "tmax": 1.2, "tmin": -4.0, "pop": 80, "rain": 3.0, "snow": 6, "wind": 12},
         {"date": "2026-11-19", "code": 71, "tmax": 0.0, "tmin": -5.5, "pop": 50, "rain": 1.0, "snow": 2, "wind": 9},
         {"date": "2026-11-20", "code": 0, "tmax": 3.1, "tmin": -6.0, "pop": 0, "rain": 0, "snow": 0, "wind": 6}]}
-    return now, [w1, w2], news
+    games = [("LAL", 131, "PHX", 123), ("IND", 124, "PHI", 131), ("CHA", 105, "LAC", 113),
+             ("BOS", 118, "MIA", 102), ("DEN", 120, "GSW", 117), ("NYK", 99, "MIL", 104),
+             ("DAL", 110, "SAS", 108)]
+    return now, [w1, w2], news, games
 
 
 # ----------------------------------------------------------------- main
@@ -349,9 +476,10 @@ def main():
     limit = int(ncfg.get("max", 8))
 
     if a.demo:
-        now, wlist, news = demo_data(tz)
+        now, wlist, news, games = demo_data(tz)
         weather = list(zip(cfg["locations"], wlist))
         news_error = False
+        nba_error = False
     else:
         now = dt.datetime.now(tz)
         weather, wfail = [], 0
@@ -362,6 +490,11 @@ def main():
                 print(f"[meteo {loc['name']}] errore: {e}", file=sys.stderr)
                 weather.append((loc, None))
                 wfail += 1
+        try:
+            games, nba_error = fetch_nba(now), False
+        except Exception as e:  # noqa
+            print(f"[nba] errore: {e}", file=sys.stderr)
+            games, nba_error = None, True
         news, news_error = [], True
         sources = ncfg.get("sources") or [{"label": "", "url": ncfg.get("url", "")}]
         for src in sources:
@@ -370,7 +503,10 @@ def main():
                 if a.news_file:
                     got = parse_news(open(a.news_file, "rb").read())
                 else:
-                    got = fetch_news(src["url"], retries=2)
+                    got = fetch_news(src["url"])
+                if src.get("strip"):
+                    for g in got:
+                        g["title"] = re.sub(src["strip"], "", g["title"]).strip()
                 got = got[:limit]
                 if not got:
                     raise ValueError("feed vuoto")
@@ -385,7 +521,8 @@ def main():
             print("Nessun dato disponibile: non genero l'immagine.", file=sys.stderr)
             sys.exit(1)
 
-    im = render(now, weather, news, news_error, label, demo=a.demo)
+    im = render(now, weather, news, news_error, label, games, nba_error,
+                phrase_of_the_day(now.date()), demo=a.demo)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     im.save(out, optimize=True)
