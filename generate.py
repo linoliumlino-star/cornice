@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Genera dash.png (600x800, scala di grigi) per il Kindle:
-meteo compatto di due localita', frase del giorno in bolognese, risultati NBA della notte
-e titoli delle ultime notizie (Il Post).
+"""Genera dash.png (600x800, scala di grigi) per il Kindle, in stile widget da parete:
+data in alto, meteo grande (temperatura attuale e previsioni), frase del giorno in basso.
 
 Uso:
   python generate.py --out dash.png            # dati veri (serve la rete)
@@ -65,7 +64,8 @@ def fetch_weather(loc, tzname, retries=4):
         "latitude": loc["lat"], "longitude": loc["lon"], "elevation": loc.get("elevation"),
         "current": "temperature_2m,weather_code",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
-                 "precipitation_probability_max,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+                 "precipitation_probability_max,precipitation_sum,snowfall_sum,wind_speed_10m_max,"
+                 "sunrise,sunset",
         "timezone": tzname, "forecast_days": 5, "wind_speed_unit": "kmh",
     }
     last = None
@@ -89,8 +89,11 @@ def parse_weather(j):
             "tmax": d["temperature_2m_max"][i], "tmin": d["temperature_2m_min"][i],
             "pop": d["precipitation_probability_max"][i], "rain": d["precipitation_sum"][i],
             "snow": d["snowfall_sum"][i], "wind": d["wind_speed_10m_max"][i],
+            "sunrise": d["sunrise"][i] if d.get("sunrise") else None,
+            "sunset": d["sunset"][i] if d.get("sunset") else None,
         })
-    return {"days": days}
+    cur = j.get("current") or {}
+    return {"days": days, "now": cur.get("temperature_2m"), "now_code": cur.get("weather_code")}
 
 
 # ------------------------------------------------------------- icone
@@ -127,7 +130,7 @@ def draw_sun(d, cx, cy, s, line=3):
 
 
 def draw_icon(d, kind, cx, cy, s):
-    line = max(2, int(s / 14))
+    line = max(2, min(6, int(s / 14)))
     if kind == "sun":
         draw_sun(d, cx, cy, s, line)
     elif kind == "partly":
@@ -144,7 +147,7 @@ def draw_icon(d, kind, cx, cy, s):
         draw_cloud(d, cx, cy - 0.18 * s, s * 0.9, line)
         for i in (-1, 0, 1):
             x = cx + i * 0.3 * s
-            d.line([x + 0.05 * s, cy + 0.2 * s, x - 0.08 * s, cy + 0.52 * s], fill=BLACK, width=line + 1)
+            d.line([x + 0.05 * s, cy + 0.13 * s, x - 0.08 * s, cy + 0.46 * s], fill=BLACK, width=line + 1)
     elif kind == "snow":
         draw_cloud(d, cx, cy - 0.18 * s, s * 0.9, line)
         for (dx, dy) in ((-0.3, 0.3), (0.0, 0.5), (0.3, 0.3), (-0.15, 0.62), (0.15, 0.62)):
@@ -156,60 +159,7 @@ def draw_icon(d, kind, cx, cy, s):
         d.polygon([(cx + x * s, cy + y * s) for x, y in pts], fill=BLACK)
 
 
-# ---------------------------------------------------------------- notizie
-HDRS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
-        "Accept-Language": "it-IT,it;q=0.9"}
-
-
-UAS = [HDRS["User-Agent"],
-       "Feedly/1.0 (+http://www.feedly.com/fetcher.html; like FeedFetcher-Google)",
-       "Mozilla/5.0 (compatible; Feedbin; +https://feedbin.com)"]
-
-
-def fetch_news(url, retries=2):
-    import requests
-    last = None
-    for ua in UAS:
-        for _ in range(retries):
-            try:
-                r = requests.get(url, timeout=30, headers={**HDRS, "User-Agent": ua})
-                r.raise_for_status()
-                return parse_news(r.content)
-            except Exception as e:  # noqa
-                last = e
-                time.sleep(3)
-    raise last
-
-
-def parse_news(xml_bytes):
-    """Legge un feed RSS 2.0 o Atom e restituisce [{'title', 'when'}] (piu' recenti per primi)."""
-    import xml.etree.ElementTree as ET
-    from email.utils import parsedate_to_datetime
-    root = ET.fromstring(xml_bytes)
-    out = []
-    for it in root.iter():
-        tag = it.tag.split("}")[-1]
-        if tag not in ("item", "entry"):
-            continue
-        title, when = "", None
-        for ch in it:
-            t = ch.tag.split("}")[-1]
-            if t == "title" and ch.text:
-                title = re.sub(r"\s+", " ", ch.text).strip()
-            elif t in ("pubDate", "published", "updated") and ch.text and when is None:
-                try:
-                    when = parsedate_to_datetime(ch.text)
-                except Exception:  # noqa
-                    try:
-                        when = dt.datetime.fromisoformat(ch.text.strip().replace("Z", "+00:00"))
-                    except Exception:  # noqa
-                        when = None
-        if title:
-            out.append({"title": title, "when": when})
-    return out
-
-
+# ------------------------------------------------------------ testo
 def wrap_text(d, text, fnt, maxw, maxlines):
     words, lines, cur = text.split(), [], ""
     for w in words:
@@ -229,76 +179,17 @@ def wrap_text(d, text, fnt, maxw, maxlines):
 
 
 
-# ------------------------------------------------------------------ NBA
-ABBR_FIX = {"GS": "GSW", "NY": "NYK", "SA": "SAS", "NO": "NOP", "UTAH": "UTA", "WSH": "WAS", "PHO": "PHX"}
+def fit_text(d, text, fnt, maxw):
+    if d.textlength(text, font=fnt) <= maxw:
+        return text
+    while text and d.textlength(text + "…", font=fnt) > maxw:
+        text = text[:-1]
+    return text + "…"
 
 
-def fetch_nba(now, retries=3):
-    """Partite NBA concluse 'ieri' (data americana, fuso Est). -> [(away, sc_away, home, sc_home)]"""
-    import requests
-    et = ZoneInfo("America/New_York")
-    day = now.astimezone(et).date() - dt.timedelta(days=1)
-    url = ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-           f"?dates={day:%Y%m%d}&limit=50")
-    last = None
-    for _ in range(retries):
-        try:
-            r = requests.get(url, timeout=30, headers=HDRS)
-            r.raise_for_status()
-            return parse_nba(r.json())
-        except Exception as e:  # noqa
-            last = e
-            time.sleep(4)
-    raise last
-
-
-def parse_nba(j):
-    out = []
-    for ev in j.get("events", []):
-        try:
-            if not ev["status"]["type"].get("completed"):
-                continue
-            comp = ev["competitions"][0]["competitors"]
-            home = next(c for c in comp if c["homeAway"] == "home")
-            away = next(c for c in comp if c["homeAway"] == "away")
-            ab = lambda c: ABBR_FIX.get(c["team"]["abbreviation"], c["team"]["abbreviation"])
-            out.append((ab(away), int(away["score"]), ab(home), int(home["score"])))
-        except Exception:  # noqa
-            continue
-    return out
-
-
-def draw_nba(d, games, y, error=False):
-    """Riquadro risultati NBA a due colonne. Ritorna la y sotto il riquadro."""
-    x0, x1 = 12, W - 12
-    f_t, f_n, f_b = font(15, True), font(19), font(19, True)
-    if error or games is None:
-        rows, h = 0, 58
-    elif not games:
-        rows, h = 0, 58
-    else:
-        rows = (len(games) + 1) // 2
-        h = 34 + rows * 26 + 6
-    d.rectangle([x0, y, x1, y + h], outline=BLACK, width=2)
-    d.text((x0 + 12, y + 8), "NBA · STANOTTE", font=f_t, fill=BLACK)
-    if rows == 0:
-        msg = "risultati non disponibili" if (error or games is None) else "nessuna partita"
-        d.text((x0 + 12, y + 30), msg, font=font(17), fill=MID)
-        return y + h
-    colw = (x1 - x0 - 24) // 2
-    for i, (aw, sa, ho, sh) in enumerate(games):
-        cx = x0 + 14 + (i % 2) * (colw + 6)
-        cy = y + 34 + (i // 2) * 26
-        win_away = sa > sh
-        x = cx
-        d.text((x, cy), aw, font=f_b if win_away else f_n, fill=BLACK)
-        x += d.textlength(aw, font=f_b if win_away else f_n)
-        d.text((x, cy), " - ", font=f_n, fill=BLACK)
-        x += d.textlength(" - ", font=f_n)
-        d.text((x, cy), ho, font=f_n if win_away else f_b, fill=BLACK)
-        x += d.textlength(ho, font=f_n if win_away else f_b)
-        d.text((x, cy), f"  {sa}-{sh}", font=f_n, fill=DARK)
-    return y + h
+def center_text(d, y, text, fnt, fill, x0=0, x1=W):
+    w = d.textlength(text, font=fnt)
+    d.text((x0 + (x1 - x0 - w) / 2, y), text, font=fnt, fill=fill)
 
 
 # ------------------------------------------------------- frase del giorno
@@ -331,40 +222,6 @@ PHRASES = [
 def phrase_of_the_day(today):
     pool = [p for p in PHRASES if p["m"] is None or today.month in p["m"]]
     return pool[today.timetuple().tm_yday % len(pool)]
-
-
-# ----------------------------------------------------------------- notizie
-def fit_text(d, text, fnt, maxw):
-    if d.textlength(text, font=fnt) <= maxw:
-        return text
-    while text and d.textlength(text + "…", font=fnt) > maxw:
-        text = text[:-1]
-    return text + "…"
-
-
-def center_text(d, y, text, fnt, fill, x0=0, x1=W):
-    w = d.textlength(text, font=fnt)
-    d.text((x0 + (x1 - x0 - w) / 2, y), text, font=fnt, fill=fill)
-
-
-def draw_news(d, items, x, y, bottom, width, label):
-    d.text((x, y), label, font=font(14, True), fill=BLACK)
-    y += 22
-    if not items:
-        d.text((x, y), "notizie non disponibili", font=font(17), fill=MID)
-        return
-    fnt = font(17, True)
-    lh, gap, bullet = 20, 7, 18
-    for it in items:
-        lines = wrap_text(d, it["title"], fnt, width - bullet, 2)
-        need = len(lines) * lh
-        if y + need > bottom:
-            break
-        d.rectangle([x + 1, y + 7, x + 7, y + 13], fill=BLACK)
-        for ln in lines:
-            d.text((x + bullet, y), ln, font=fnt, fill=BLACK)
-            y += lh
-        y += gap
 
 
 # ------------------------------------------- frase del giorno da Wikiquote
@@ -442,100 +299,118 @@ def get_phrase(today, demo=False):
         return phrase_of_the_day(today)
 
 
-# -------------------------------------------------------------------- meteo
+# ------------------------------------------------------------------ disegno
+def fmt_t(v):
+    return "–" if v is None else f"{round(v)}°"
+
+
 def day_label(day):
     dd = dt.date.fromisoformat(day["date"])
-    return f"{GIORNI3[dd.weekday()]} {dd.day}"
+    return f"{GIORNI3[dd.weekday()].upper()} {dd.day}"
 
 
 def wet(day):
     return kind_of(day["code"]) in ("rain", "snow", "storm") or (day.get("pop") or 0) >= 40
 
 
-def fmt_t(v):
-    return "–" if v is None else f"{round(v)}°"
+def hhmm(iso):
+    return iso[-5:] if iso else "--:--"
 
 
-def draw_panel(d, x0, y0, x1, loc, w):
-    """Meteo: oggi in grande, poi i prossimi giorni in piccolo. Ritorna la y del fondo."""
-    center_text(d, y0, loc["name"].upper(), font(16, True), BLACK, x0, x1)
-    if w is None:
-        center_text(d, y0 + 30, "meteo non disponibile", font(17), MID, x0, x1)
-        return y0 + 60
+CARD = 238   # grigio chiarissimo dei riquadri
+
+
+def draw_hero(d, w, y0):
+    """Temperatura attuale in grande con icona; ritorna la y del fondo."""
     today = w["days"][0]
-    k = kind_of(today["code"])
-    f_t = font(42, True)
-    txt = f"{fmt_t(today['tmax'])} / {fmt_t(today['tmin'])}"
-    icon_w = 50
-    sx = x0 + (x1 - x0 - (icon_w + 8 + d.textlength(txt, font=f_t))) / 2
-    draw_icon(d, k, sx + icon_w / 2, y0 + 50, 32)
-    d.text((sx + icon_w + 8, y0 + 22), txt, font=f_t, fill=BLACK)
-    parts = [DESCR[k]]
-    if today.get("pop") is not None:
-        parts.append(f"prec. {round(today['pop'])}%")
+    code = w["now_code"] if w.get("now_code") is not None else today["code"]
+    k = kind_of(code)
+    temp = w["now"] if w.get("now") is not None else today["tmax"]
+    f_big = font(128, True)
+    txt = fmt_t(temp)
+    tw = d.textlength(txt, font=f_big)
+    icon_w = 190
+    sx = (W - (icon_w + 14 + tw)) / 2
+    draw_icon(d, k, sx + icon_w / 2, y0 + 100, 170)
+    d.text((sx + icon_w + 14, y0 + 8), txt, font=f_big, fill=BLACK)
+    y = y0 + 192
+    line1 = DESCR[k].capitalize()
+    if today.get("pop") is not None and (wet(today) or today["pop"] >= 20):
+        line1 += f"  ·  prec. {round(today['pop'])}%"
     if today.get("snow"):
-        parts.append(f"neve {today['snow']:.0f} cm")
-    center_text(d, y0 + 78, " · ".join(parts), font(16), DARK, x0, x1)
+        line1 += f"  ·  neve {today['snow']:.0f} cm"
+    center_text(d, y, line1, font(26, True), BLACK)
+    y += 38
+    center_text(d, y, f"max {fmt_t(today['tmax'])}      min {fmt_t(today['tmin'])}", font(24), DARK)
+    y += 34
+    center_text(d, y, f"alba {hhmm(today.get('sunrise'))}    tramonto {hhmm(today.get('sunset'))}", font(18), MID)
+    return y + 26
 
-    yf = y0 + 108
-    d.line([24, yf - 4, W - 24, yf - 4], fill=LIGHT, width=2)
+
+def draw_cards(d, w, y0, h=168):
     days = w["days"][1:5]
-    cw = (x1 - x0) / max(len(days), 1)
-    f_d, f_v, f_p = font(14, True), font(16, True), font(13)
-    for n, day in enumerate(days):
-        cx = x0 + cw * n + cw / 2
-        center_text(d, yf, day_label(day), f_d, BLACK, cx - cw / 2, cx + cw / 2)
-        tt = f"{fmt_t(day['tmax'])}/{fmt_t(day['tmin'])}"
-        tot = 28 + d.textlength(tt, font=f_v)
-        ix = cx - tot / 2
-        draw_icon(d, kind_of(day["code"]), ix + 10, yf + 33, 17)
-        d.text((ix + 28, yf + 22), tt, font=f_v, fill=BLACK)
+    n = len(days)
+    gap = 10
+    cw = (W - 24 - gap * (n - 1)) / n
+    f_d, f_v, f_p = font(20, True), font(24, True), font(16)
+    for i, day in enumerate(days):
+        x0 = 12 + i * (cw + gap)
+        d.rounded_rectangle([x0, y0, x0 + cw, y0 + h], radius=20, fill=CARD)
+        cx = x0 + cw / 2
+        center_text(d, y0 + 12, day_label(day), f_d, BLACK, x0, x0 + cw)
+        draw_icon(d, kind_of(day["code"]), cx, y0 + 80, 56)
+        center_text(d, y0 + 112, f"{fmt_t(day['tmax'])}/{fmt_t(day['tmin'])}", f_v, BLACK, x0, x0 + cw)
         if wet(day) and day.get("pop") is not None:
-            center_text(d, yf + 44, f"prec. {round(day['pop'])}%", f_p, DARK, cx - cw / 2, cx + cw / 2)
-    return yf + 62
+            center_text(d, y0 + 144, f"prec. {round(day['pop'])}%", f_p, DARK, x0, x0 + cw)
+    return y0 + h
 
 
-def render(now, weather, news, news_error, label, games, nba_error, phrase, demo=False):
+def draw_phrase(d, phrase, top, bottom):
+    """Frase del giorno centrata verticalmente tra top e bottom."""
+    if not phrase:
+        return
+    if phrase.get("a") is not None:
+        fq, fa = font(21, True, italic=True), font(17)
+        lines = wrap_text(d, "«" + phrase["d"] + "»", fq, W - 56, 4)
+        blocks = [(ln, fq, BLACK, 27) for ln in lines]
+        if phrase["a"]:
+            blocks.append(("— " + phrase["a"], fa, DARK, 26))
+    else:
+        fq, fi = font(22, True, italic=True), font(17)
+        lines = wrap_text(d, "«" + phrase["d"] + "»", fq, W - 56, 3)
+        blocks = [(ln, fq, BLACK, 28) for ln in lines]
+        blocks += [(ln, fi, DARK, 22) for ln in wrap_text(d, phrase["i"], fi, W - 56, 2)]
+    total = sum(b[3] for b in blocks)
+    y = top + max(0, (bottom - top - total) / 2)
+    for text, f, col, lh in blocks:
+        center_text(d, y, text, f, col)
+        y += lh
+
+
+def render(now, loc, w, phrase, demo=False):
     im = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(im)
     today = now.date()
 
-    # data + frase del giorno
-    center_text(d, 8, f"{GIORNI[today.weekday()]} {today.day} {MESI[today.month - 1]}".upper(),
-                font(30, True), BLACK)
-    y = 46
-    if phrase:
-        if phrase.get("a") is not None:
-            fd = font(16, True, italic=True)
-            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 4):
-                center_text(d, y, ln, fd, BLACK)
-                y += 21
-            if phrase["a"]:
-                center_text(d, y, "— " + phrase["a"], font(14), DARK)
-                y += 19
-        else:
-            fd, fi = font(18, True, italic=True), font(14)
-            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 2):
-                center_text(d, y, ln, fd, BLACK)
-                y += 22
-            for ln in wrap_text(d, phrase["i"], fi, W - 40, 2):
-                center_text(d, y, ln, fi, DARK)
-                y += 18
-    y += 6
-    d.rectangle([0, y, W, y + 2], fill=BLACK)
+    # data
+    center_text(d, 14, GIORNI[today.weekday()].upper(), font(28, True), DARK)
+    center_text(d, 46, f"{today.day} {MESI[today.month - 1]}", font(54, True), BLACK)
+    center_text(d, 116, loc["name"].upper(), font(17, True), MID)
+    d.line([40, 146, W - 40, 146], fill=LIGHT, width=2)
 
-    # meteo
-    loc, w = weather[0]
-    y = draw_panel(d, 0, y + 10, W, loc, w)
-    d.rectangle([0, y, W, y + 2], fill=BLACK)
+    if w is None:
+        center_text(d, 300, "meteo non disponibile", font(28), MID)
+        y = 440
+    else:
+        y = draw_hero(d, w, 156)
+        y = draw_cards(d, w, y + 4)
 
-    # NBA
-    y = draw_nba(d, games, y + 10, error=nba_error) + 10
+    # frase del giorno
+    top = y + 14
+    d.line([40, top, W - 40, top], fill=LIGHT, width=2)
+    draw_phrase(d, phrase, top + 6, 772)
 
-    # notizie
-    draw_news(d, [] if news_error else news, 16, y, 766, W - 32, label)
-
-    # piede
+    # piede (a destra resta libero per l'indicatore di carica scritto dal Kindle)
     foot = f"aggiornato {now:%d/%m %H:%M}" + ("  ·  DEMO" if demo else "")
     d.text((16, 781), foot, font=font(12), fill=MID)
 
@@ -546,28 +421,13 @@ def render(now, weather, news, news_error, label, games, nba_error, phrase, demo
 # ----------------------------------------------------------------- demo
 def demo_data(tz):
     now = dt.datetime(2026, 11, 18, 6, 30, tzinfo=tz)
-    news = [{"title": t, "when": None} for t in (
-        "Il governo ha approvato la legge di bilancio, con alcune novità su pensioni e sanità",
-        "In Emilia-Romagna è prevista allerta meteo per le piogge intense di mercoledì",
-        "Cosa sappiamo del nuovo accordo commerciale tra Unione Europea e Mercosur",
-        "È morto a 86 anni un celebre regista teatrale: aveva diretto opere in tutto il mondo",
-        "Perché i biglietti dei concerti sono diventati così costosi",
-        "Il Portogallo ha annunciato un'allerta di cinque giorni per il rischio di incendi",
-        "Una nuova ricerca spiega perché dormiamo peggio d'inverno")]
-    w1 = {"days": [
-        {"date": "2026-11-18", "code": 61, "tmax": 11.4, "tmin": 6.2, "pop": 70, "rain": 4.0, "snow": 0, "wind": 14},
-        {"date": "2026-11-19", "code": 3, "tmax": 10.1, "tmin": 5.0, "pop": 20, "rain": 0.2, "snow": 0, "wind": 10},
-        {"date": "2026-11-20", "code": 2, "tmax": 12.8, "tmin": 4.1, "pop": 5, "rain": 0, "snow": 0, "wind": 8},
-        {"date": "2026-11-21", "code": 61, "tmax": 9.0, "tmin": 5.2, "pop": 65, "rain": 5, "snow": 0, "wind": 15},
-        {"date": "2026-11-22", "code": 0, "tmax": 12.0, "tmin": 3.0, "pop": 0, "rain": 0, "snow": 0, "wind": 7}]}
-    w2 = {"days": [
-        {"date": "2026-11-18", "code": 73, "tmax": 1.2, "tmin": -4.0, "pop": 80, "rain": 3.0, "snow": 6, "wind": 12},
-        {"date": "2026-11-19", "code": 71, "tmax": 0.0, "tmin": -5.5, "pop": 50, "rain": 1.0, "snow": 2, "wind": 9},
-        {"date": "2026-11-20", "code": 0, "tmax": 3.1, "tmin": -6.0, "pop": 0, "rain": 0, "snow": 0, "wind": 6}]}
-    games = [("LAL", 131, "PHX", 123), ("IND", 124, "PHI", 131), ("CHA", 105, "LAC", 113),
-             ("BOS", 118, "MIA", 102), ("DEN", 120, "GSW", 117), ("NYK", 99, "MIL", 104),
-             ("DAL", 110, "SAS", 108)]
-    return now, [w1, w2], news, games
+    w = {"now": 7.4, "now_code": 61, "days": [
+        {"date": "2026-11-18", "code": 61, "tmax": 11.4, "tmin": 6.2, "pop": 70, "rain": 4.0, "snow": 0, "wind": 14, "sunrise": "2026-11-18T07:12", "sunset": "2026-11-18T16:56"},
+        {"date": "2026-11-19", "code": 3, "tmax": 10.1, "tmin": 5.0, "pop": 20, "rain": 0.2, "snow": 0, "wind": 10, "sunrise": None, "sunset": None},
+        {"date": "2026-11-20", "code": 2, "tmax": 12.8, "tmin": 4.1, "pop": 5, "rain": 0, "snow": 0, "wind": 8, "sunrise": None, "sunset": None},
+        {"date": "2026-11-21", "code": 61, "tmax": 9.0, "tmin": 5.2, "pop": 65, "rain": 5, "snow": 0, "wind": 15, "sunrise": None, "sunset": None},
+        {"date": "2026-11-22", "code": 0, "tmax": 12.0, "tmin": 3.0, "pop": 0, "rain": 0, "snow": 0, "wind": 7, "sunrise": None, "sunset": None}]}
+    return now, w
 
 
 # ----------------------------------------------------------------- main
@@ -576,62 +436,22 @@ def main():
     ap.add_argument("--out", default="dash.png")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     ap.add_argument("--demo", action="store_true")
-    ap.add_argument("--news-file", help="(test) legge le notizie da un file XML locale")
     a = ap.parse_args()
     cfg = json.load(open(a.config, encoding="utf-8"))
     tz = ZoneInfo(cfg["timezone"])
-    ncfg = cfg.get("news", {})
-    label = ncfg.get("label", "NOTIZIE")
-    limit = int(ncfg.get("max", 8))
+    loc = cfg["locations"][0]
 
     if a.demo:
-        now, wlist, news, games = demo_data(tz)
-        weather = list(zip(cfg["locations"], wlist))
-        news_error = False
-        nba_error = False
+        now, w = demo_data(tz)
     else:
         now = dt.datetime.now(tz)
-        weather, wfail = [], 0
-        for loc in cfg["locations"]:
-            try:
-                weather.append((loc, fetch_weather(loc, cfg["timezone"])))
-            except Exception as e:  # noqa
-                print(f"[meteo {loc['name']}] errore: {e}", file=sys.stderr)
-                weather.append((loc, None))
-                wfail += 1
         try:
-            games, nba_error = fetch_nba(now), False
+            w = fetch_weather(loc, cfg["timezone"])
         except Exception as e:  # noqa
-            print(f"[nba] errore: {e}", file=sys.stderr)
-            games, nba_error = None, True
-        news, news_error = [], True
-        sources = ncfg.get("sources") or [{"label": "", "url": ncfg.get("url", "")}]
-        for src in sources:
-            name = src.get("label") or src["url"]
-            try:
-                if a.news_file:
-                    got = parse_news(open(a.news_file, "rb").read())
-                else:
-                    got = fetch_news(src["url"])
-                if src.get("strip"):
-                    for g in got:
-                        g["title"] = re.sub(src["strip"], "", g["title"]).strip()
-                got = got[:limit]
-                if not got:
-                    raise ValueError("feed vuoto")
-                news, news_error = got, False
-                if src.get("label"):
-                    label = f"{label} · {src['label']}"
-                print(f"[notizie] fonte: {name}")
-                break
-            except Exception as e:  # noqa
-                print(f"[notizie] {name}: errore: {e}", file=sys.stderr)
-        if wfail == len(cfg["locations"]) and news_error:
-            print("Nessun dato disponibile: non genero l'immagine.", file=sys.stderr)
+            print(f"[meteo] errore: {e}: non genero l'immagine (resta la precedente).", file=sys.stderr)
             sys.exit(1)
 
-    im = render(now, weather, news, news_error, label, games, nba_error,
-                get_phrase(now.date(), a.demo), demo=a.demo)
+    im = render(now, loc, w, get_phrase(now.date(), a.demo), demo=a.demo)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     im.save(out, optimize=True)
