@@ -4,7 +4,9 @@
     {"name": "Anzola dell'Emilia", "lat": 44.55, "lon": 11.19, "elevation": 38},
     {"name": "Pellizzano (TN)",    "lat": 46.32, "lon": 10.78, "elevation": 774}
   ],
-  "calendars": [
-    {"env": "ICS_CHITARRA",  "label": "Chitarra Capaldo", "mode": "initials"}
-  ]
+  "news": {
+    "label": "NOTIZIE · IL POST",
+    "url": "https://www.ilpost.it/feed/",
+    "max": 8
+  }
 }
