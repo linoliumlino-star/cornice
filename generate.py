@@ -66,7 +66,7 @@ def fetch_weather(loc, tzname, retries=4):
         "current": "temperature_2m,weather_code",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
                  "precipitation_probability_max,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-        "timezone": tzname, "forecast_days": 3, "wind_speed_unit": "kmh",
+        "timezone": tzname, "forecast_days": 5, "wind_speed_unit": "kmh",
     }
     last = None
     for _ in range(retries):
@@ -348,50 +348,151 @@ def center_text(d, y, text, fnt, fill, x0=0, x1=W):
 
 
 def draw_news(d, items, x, y, bottom, width, label):
-    d.text((x, y), label, font=font(15, True), fill=BLACK)
-    y += 26
+    d.text((x, y), label, font=font(14, True), fill=BLACK)
+    y += 22
     if not items:
-        d.text((x, y), "notizie non disponibili", font=font(19), fill=MID)
+        d.text((x, y), "notizie non disponibili", font=font(17), fill=MID)
         return
-    fnt = font(19, True)
-    lh, gap, bullet = 23, 9, 20
+    fnt = font(17, True)
+    lh, gap, bullet = 20, 7, 18
     for it in items:
         lines = wrap_text(d, it["title"], fnt, width - bullet, 2)
         need = len(lines) * lh
         if y + need > bottom:
             break
-        d.rectangle([x + 1, y + 8, x + 8, y + 15], fill=BLACK)
+        d.rectangle([x + 1, y + 7, x + 7, y + 13], fill=BLACK)
         for ln in lines:
             d.text((x + bullet, y), ln, font=fnt, fill=BLACK)
             y += lh
         y += gap
 
 
+# ------------------------------------------- frase del giorno da Wikiquote
+WQ_UA = {"User-Agent": "CorniceKindle/1.0 (https://github.com/linoliumlino-star/cornice)"}
+
+
+def _wq_clean(s):
+    s = s.replace("{{!}}", " / ")
+    s = re.sub(r"<ref[^>]*>.*?</ref>", "", s, flags=re.S)
+    s = re.sub(r"<br\s*/?>", " ", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"\[\[(?:[^\]|]*\|)?([^\]]*)\]\]", r"\1", s)
+    s = re.sub(r"\{\{[^}]*\}\}", "", s)
+    s = s.replace("'''", "").replace("''", "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_quote(wt):
+    """Legge il modello {{Cdg|citazione=...|autore=...}} di Wikiquote."""
+    m = re.search(r"\{\{\s*Cdg\s*\|(.*)\}\}\s*$", wt.strip(), re.S)
+    body, parts, depth, cur, i = m.group(1), [], 0, "", 0
+    while i < len(body):
+        two = body[i:i + 2]
+        if two in ("{{", "[["):
+            depth += 1
+            cur += two
+            i += 2
+        elif two in ("}}", "]]"):
+            depth -= 1
+            cur += two
+            i += 2
+        elif body[i] == "|" and depth == 0:
+            parts.append(cur)
+            cur = ""
+            i += 1
+        else:
+            cur += body[i]
+            i += 1
+    parts.append(cur)
+    kv = {}
+    for p in parts:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            kv[k.strip()] = v.strip()
+    q, a = _wq_clean(kv["citazione"]), _wq_clean(kv.get("autore", ""))
+    if not q or len(q) > 250:
+        raise ValueError(f"citazione non adatta ({len(q)} caratteri)")
+    return {"d": q, "a": a}
+
+
+def fetch_quote(today, retries=3):
+    """Citazione del giorno di it.wikiquote.org (una per ogni giorno dell'anno)."""
+    import requests
+    page = f"Template:Qotd/{today.day}{MESI[today.month - 1]}"
+    last = None
+    for _ in range(retries):
+        try:
+            r = requests.get("https://it.wikiquote.org/w/index.php", timeout=20, headers=WQ_UA,
+                             params={"title": page, "action": "raw"})
+            r.raise_for_status()
+            return parse_quote(r.text)
+        except Exception as e:  # noqa
+            last = e
+            time.sleep(3)
+    raise last
+
+
+def get_phrase(today, demo=False):
+    if demo:
+        return {"d": "Il peggio che può capitare a un genio è di essere compreso.", "a": "Ennio Flaiano"}
+    try:
+        return fetch_quote(today)
+    except Exception as e:  # noqa
+        print(f"[frase] Wikiquote: errore: {e} (uso un proverbio bolognese)", file=sys.stderr)
+        return phrase_of_the_day(today)
+
+
+# -------------------------------------------------------------------- meteo
+def day_label(day):
+    dd = dt.date.fromisoformat(day["date"])
+    return f"{GIORNI3[dd.weekday()]} {dd.day}"
+
+
+def wet(day):
+    return kind_of(day["code"]) in ("rain", "snow", "storm") or (day.get("pop") or 0) >= 40
+
+
+def fmt_t(v):
+    return "–" if v is None else f"{round(v)}°"
+
+
 def draw_panel(d, x0, y0, x1, loc, w):
-    """Pannello meteo compatto di una localita' (x0..x1, a partire da y0)."""
-    name = loc["name"].upper()
-    center_text(d, y0, fit_text(d, name, font(17, True), x1 - x0 - 12), font(17, True), BLACK, x0, x1)
+    """Meteo: oggi in grande, poi i prossimi giorni in piccolo. Ritorna la y del fondo."""
+    center_text(d, y0, loc["name"].upper(), font(16, True), BLACK, x0, x1)
     if w is None:
-        center_text(d, y0 + 40, "meteo non disponibile", font(17), MID, x0, x1)
-        return
+        center_text(d, y0 + 30, "meteo non disponibile", font(17), MID, x0, x1)
+        return y0 + 60
     today = w["days"][0]
     k = kind_of(today["code"])
-    tmax = "–" if today["tmax"] is None else f"{round(today['tmax'])}°"
-    tmin = "–" if today["tmin"] is None else f"{round(today['tmin'])}°"
-    f_t = font(38, True)
-    txt = f"{tmax} / {tmin}"
-    tw = d.textlength(txt, font=f_t)
-    icon_w = 44
-    total = icon_w + 8 + tw
-    sx = x0 + (x1 - x0 - total) / 2
-    draw_icon(d, k, sx + icon_w / 2, y0 + 52, 28)
-    d.text((sx + icon_w + 8, y0 + 28), txt, font=f_t, fill=BLACK)
+    f_t = font(42, True)
+    txt = f"{fmt_t(today['tmax'])} / {fmt_t(today['tmin'])}"
+    icon_w = 50
+    sx = x0 + (x1 - x0 - (icon_w + 8 + d.textlength(txt, font=f_t))) / 2
+    draw_icon(d, k, sx + icon_w / 2, y0 + 50, 32)
+    d.text((sx + icon_w + 8, y0 + 22), txt, font=f_t, fill=BLACK)
     parts = [DESCR[k]]
     if today.get("pop") is not None:
         parts.append(f"prec. {round(today['pop'])}%")
     if today.get("snow"):
         parts.append(f"neve {today['snow']:.0f} cm")
     center_text(d, y0 + 78, " · ".join(parts), font(16), DARK, x0, x1)
+
+    yf = y0 + 108
+    d.line([24, yf - 4, W - 24, yf - 4], fill=LIGHT, width=2)
+    days = w["days"][1:5]
+    cw = (x1 - x0) / max(len(days), 1)
+    f_d, f_v, f_p = font(14, True), font(16, True), font(13)
+    for n, day in enumerate(days):
+        cx = x0 + cw * n + cw / 2
+        center_text(d, yf, day_label(day), f_d, BLACK, cx - cw / 2, cx + cw / 2)
+        tt = f"{fmt_t(day['tmax'])}/{fmt_t(day['tmin'])}"
+        tot = 28 + d.textlength(tt, font=f_v)
+        ix = cx - tot / 2
+        draw_icon(d, kind_of(day["code"]), ix + 10, yf + 33, 17)
+        d.text((ix + 28, yf + 22), tt, font=f_v, fill=BLACK)
+        if wet(day) and day.get("pop") is not None:
+            center_text(d, yf + 44, f"prec. {round(day['pop'])}%", f_p, DARK, cx - cw / 2, cx + cw / 2)
+    return yf + 62
 
 
 def render(now, weather, news, news_error, label, games, nba_error, phrase, demo=False):
@@ -402,35 +503,41 @@ def render(now, weather, news, news_error, label, games, nba_error, phrase, demo
     # data + frase del giorno
     center_text(d, 8, f"{GIORNI[today.weekday()]} {today.day} {MESI[today.month - 1]}".upper(),
                 font(30, True), BLACK)
-    y = 48
+    y = 46
     if phrase:
-        fd, fi = font(19, True, italic=True), font(15)
-        for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 2):
-            center_text(d, y, ln, fd, BLACK)
-            y += 24
-        for ln in wrap_text(d, phrase["i"], fi, W - 40, 2):
-            center_text(d, y, ln, fi, DARK)
-            y += 19
+        if phrase.get("a") is not None:
+            fd = font(17, True, italic=True)
+            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 3):
+                center_text(d, y, ln, fd, BLACK)
+                y += 21
+            if phrase["a"]:
+                center_text(d, y, "— " + phrase["a"], font(14), DARK)
+                y += 19
+        else:
+            fd, fi = font(18, True, italic=True), font(14)
+            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 2):
+                center_text(d, y, ln, fd, BLACK)
+                y += 22
+            for ln in wrap_text(d, phrase["i"], fi, W - 40, 2):
+                center_text(d, y, ln, fi, DARK)
+                y += 18
     y += 6
     d.rectangle([0, y, W, y + 2], fill=BLACK)
 
     # meteo
-    y0 = y + 10
-    d.line([300, y0 + 2, 300, y0 + 98], fill=LIGHT, width=2)
-    for (x0, x1), (loc, w) in zip(((6, 296), (304, 594)), weather):
-        draw_panel(d, x0, y0, x1, loc, w)
-    y = y0 + 106
+    loc, w = weather[0]
+    y = draw_panel(d, 0, y + 10, W, loc, w)
     d.rectangle([0, y, W, y + 2], fill=BLACK)
 
     # NBA
     y = draw_nba(d, games, y + 10, error=nba_error) + 10
 
     # notizie
-    draw_news(d, [] if news_error else news, 16, y, 764, W - 32, label)
+    draw_news(d, [] if news_error else news, 16, y, 766, W - 32, label)
 
     # piede
     foot = f"aggiornato {now:%d/%m %H:%M}" + ("  ·  DEMO" if demo else "")
-    d.text((16, 779), foot, font=font(13), fill=MID)
+    d.text((16, 781), foot, font=font(12), fill=MID)
 
     # 16 livelli di grigio, senza dithering (il testo resta nitido)
     return im.point(lambda v: min(255, round(v / 17) * 17))
@@ -450,7 +557,9 @@ def demo_data(tz):
     w1 = {"days": [
         {"date": "2026-11-18", "code": 61, "tmax": 11.4, "tmin": 6.2, "pop": 70, "rain": 4.0, "snow": 0, "wind": 14},
         {"date": "2026-11-19", "code": 3, "tmax": 10.1, "tmin": 5.0, "pop": 20, "rain": 0.2, "snow": 0, "wind": 10},
-        {"date": "2026-11-20", "code": 2, "tmax": 12.8, "tmin": 4.1, "pop": 5, "rain": 0, "snow": 0, "wind": 8}]}
+        {"date": "2026-11-20", "code": 2, "tmax": 12.8, "tmin": 4.1, "pop": 5, "rain": 0, "snow": 0, "wind": 8},
+        {"date": "2026-11-21", "code": 61, "tmax": 9.0, "tmin": 5.2, "pop": 65, "rain": 5, "snow": 0, "wind": 15},
+        {"date": "2026-11-22", "code": 0, "tmax": 12.0, "tmin": 3.0, "pop": 0, "rain": 0, "snow": 0, "wind": 7}]}
     w2 = {"days": [
         {"date": "2026-11-18", "code": 73, "tmax": 1.2, "tmin": -4.0, "pop": 80, "rain": 3.0, "snow": 6, "wind": 12},
         {"date": "2026-11-19", "code": 71, "tmax": 0.0, "tmin": -5.5, "pop": 50, "rain": 1.0, "snow": 2, "wind": 9},
@@ -522,7 +631,7 @@ def main():
             sys.exit(1)
 
     im = render(now, weather, news, news_error, label, games, nba_error,
-                phrase_of_the_day(now.date()), demo=a.demo)
+                get_phrase(now.date(), a.demo), demo=a.demo)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     im.save(out, optimize=True)
