@@ -410,7 +410,7 @@ def parse_quote(wt):
             k, v = p.split("=", 1)
             kv[k.strip()] = v.strip()
     q, a = _wq_clean(kv["citazione"]), _wq_clean(kv.get("autore", ""))
-    if not q or len(q) > 250:
+    if not q or len(q) > 230:
         raise ValueError(f"citazione non adatta ({len(q)} caratteri)")
     return {"d": q, "a": a}
 
@@ -506,8 +506,8 @@ def render(now, weather, news, news_error, label, games, nba_error, phrase, demo
     y = 46
     if phrase:
         if phrase.get("a") is not None:
-            fd = font(17, True, italic=True)
-            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 3):
+            fd = font(16, True, italic=True)
+            for ln in wrap_text(d, "«" + phrase["d"] + "»", fd, W - 40, 4):
                 center_text(d, y, ln, fd, BLACK)
                 y += 21
             if phrase["a"]:
